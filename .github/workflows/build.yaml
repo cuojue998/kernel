@@ -1,66 +1,90 @@
-name: Build Kernel Modules (SM7325)
-on: [workflow_dispatch]
+name: Build SM7325 Kernel Modules (Reno7/holi)
+on:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 检出仓库代码
+      - name: 1. 检出你的仓库（驱动源码）
         uses: actions/checkout@v4
-        fetch-depth: 0
+        with:
+          name: driver-repo
+          path: driver-repo
 
-      - name: 安装编译依赖
+      - name: 2. 安装编译依赖
         run: |
           sudo apt-get update -y
           sudo apt-get install -y git flex bison gperf build-essential zip curl \
           zlib1g-dev libncurses5-dev libssl-dev bc libelf-dev lz4 cpio
 
-      - name: 缓存 AOSP Clang
+      - name: 3. 缓存 AOSP Clang
         id: cache-clang
         uses: actions/cache@v3
         with:
           path: clang
           key: clang-r416183b1-sm7325
 
-      - name: 下载 Android12 Clang r416183b1
+      - name: 4. 下载 Android12 Clang r416183b1
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p clang
           cd clang
-          # 正确完整预编译包地址
           wget -q https://storage.googleapis.com/chromium-browser-clang/Linux_x64/clang-r416183b1.tar.xz
           tar -xf clang-r416183b1.tar.xz
           echo "$PWD/bin" >> $GITHUB_PATH
 
-      - name: 内核模块编译环境
+      - name: 5. 拉取 OPPO SM7325 官方内核源码
+        run: |
+          git clone --depth=1 https://github.com/oppo-source/android_kernel_oppo_sm7325.git kernel-src
+          cd kernel-src
+          # 这里你可以加 checkout 到特定 commit，和你手机内核版本保持一致
+          # git checkout <你的手机内核commit hash>
+
+      - name: 6. 配置并准备内核编译环境
         env:
           ARCH: arm64
           CC: clang
           CLANG_TRIPLE: aarch64-linux-gnu-
           CROSS_COMPILE: aarch64-linux-gnu-
         run: |
-          # 清理旧编译产物
+          cd kernel-src
           rm -rf out
-          # 改用SM7325对应defconfig，自行替换成你设备的defconfig名
+          # 使用 holi 平台配置
           make O=out ARCH=arm64 vendor/holi_QGKI.config
-          # 开启兼容第三方模块、关闭严格vermagic
+          # 强制开启模块支持、关闭 vermagic 校验
           echo "CONFIG_MODULES=y" >> out/.config
           echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
           echo "CONFIG_ALLOW_UNSUPPORTED_MODULES=y" >> out/.config
           echo "CONFIG_MODVERSIONS=n" >> out/.config
-          # 准备编译环境
+          # 准备模块编译依赖
           make O=out ARCH=arm64 modules_prepare
-          # 编译当前仓库外部驱动模块
-          make O=out ARCH=arm64 M=$(pwd) modules -j$(nproc)
 
-      - name: 打包 ko 产物
+      - name: 7. 编译你的外部驱动模块
+        env:
+          ARCH: arm64
+          CC: clang
+          CLANG_TRIPLE: aarch64-linux-gnu-
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: |
+          cd kernel-src
+          # 编译 driver-repo 里的驱动（路径是你驱动的 Makefile 所在目录）
+          make O=out ARCH=arm64 M=$GITHUB_WORKSPACE/driver-repo modules -j$(nproc)
+
+      - name: 8. 打包 ko 产物
         run: |
           mkdir -p artifacts
-          find . -maxdepth 3 -name "*.ko" -exec cp {} artifacts/ \;
-          zip -r kernel-modules-$(date +%Y%m%d%H%M%S).zip artifacts/
+          # 从驱动目录和内核目录收集所有 ko
+          find driver-repo -name "*.ko" -exec cp {} artifacts/ \;
+          find kernel-src/out -name "*.ko" -exec cp {} artifacts/ \;
+          # 保存内核版本信息，方便排错
+          cp kernel-src/out/include/config/kernel.release artifacts/kernel_version.txt 2>/dev/null || true
+          # 生成 zip
+          cd artifacts
+          zip -r ../sm7325-modules-$(date +%Y%m%d-%H%M%S).zip .
 
-      - name: 上传产物
+      - name: 9. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: SM7325-KO-Modules
-          path: kernel-modules-*.zip
+          name: sm7325-driver-modules
+          path: sm7325-modules-*.zip
