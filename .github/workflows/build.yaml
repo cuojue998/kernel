@@ -1,0 +1,57 @@
+name: Build Kernel Modules (SM7325)
+# 手动触发，或根据需求改为 push/pull_request
+on: [workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出仓库代码（含驱动源码）
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git flex bison gperf build-essential zip curl \
+            zlib1g-dev libncurses5-dev libssl-dev bc \
+            gcc-aarch64-linux-gnu
+
+      - name: 下载 Android 12 专用 AOSP Clang
+        run: |
+          mkdir -p ${{ github.workspace }}/clang
+          cd ${{ github.workspace }}/clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b1.tar.gz
+          tar -xzf clang-r416183b1.tar.gz
+          echo "$PWD/bin" >> $GITHUB_PATH
+
+      - name: 编译内核模块（根目录下的驱动源码）
+        env:
+          ARCH: arm64
+          CROSS_COMPILE: aarch64-linux-gnu-
+          CC: clang
+          CLANG_TRIPLE: aarch64-linux-gnu-
+        run: |
+          # 生成内核配置
+          make O=out ARCH=arm64 defconfig
+          # 准备模块编译依赖
+          make O=out ARCH=arm64 modules_prepare
+          # 编译仓库根目录下的所有外部模块（Makefile 中定义的 M=...）
+          make O=out ARCH=arm64 M=$PWD modules
+
+      - name: 打包所有产物为 ZIP
+        run: |
+          mkdir -p artifacts
+          # 收集所有 .ko 文件
+          find . -name "*.ko" -exec cp -v {} artifacts/ \;
+          # 附加内核版本信息，方便分析
+          cp out/include/config/kernel.release artifacts/kernel_version.txt 2>/dev/null || true
+          # 生成 zip 包
+          cd artifacts
+          zip -r ../kernel-modules-$(date +%Y%m%d-%H%M%S).zip .
+          echo "ZIP_NAME=$(ls ../kernel-modules-*.zip)" >> $GITHUB_ENV
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-modules
+          path: kernel-modules-*.zip
