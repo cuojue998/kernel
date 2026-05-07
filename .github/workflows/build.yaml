@@ -1,73 +1,66 @@
-name: Build DKernel Module
-
-on:
-  workflow_dispatch:
+name: Build Kernel Modules (SM7325)
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: 检出驱动源码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
+        fetch-depth: 0
 
-      - name: 安装编译工具链
+      - name: 安装编译依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git flex bison bc build-essential zip curl \
-            libssl-dev libncurses-dev gcc-aarch64-linux-gnu
+          sudo apt-get update -y
+          sudo apt-get install -y git flex bison gperf build-essential zip curl \
+          zlib1g-dev libncurses5-dev libssl-dev bc libelf-dev lz4 cpio
 
-      - name: 克隆 OPPO SM7325 内核源码
+      - name: 缓存 AOSP Clang
+        id: cache-clang
+        uses: actions/cache@v3
+        with:
+          path: clang
+          key: clang-r416183b1-sm7325
+
+      - name: 下载 Android12 Clang r416183b1
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 https://github.com/oppo-source/android_kernel_oppo_sm7325.git \
-            ${{ github.workspace }}/kernel_src
+          mkdir -p clang
+          cd clang
+          # 正确完整预编译包地址
+          wget -q https://storage.googleapis.com/chromium-browser-clang/Linux_x64/clang-r416183b1.tar.xz
+          tar -xf clang-r416183b1.tar.xz
+          echo "$PWD/bin" >> $GITHUB_PATH
 
-      - name: 配置内核（自动选择 defconfig）
-        run: |
-          cd ${{ github.workspace }}/kernel_src
-          # 查找第一个可用的 defconfig 文件
-          DEFCONFIG=$(ls arch/arm64/configs/*_defconfig 2>/dev/null | head -1 | xargs basename | sed 's/_defconfig//')
-          if [ -z "$DEFCONFIG" ]; then
-            # 如果没有 *_defconfig，检查是否有 defconfig 文件
-            if [ -f arch/arm64/configs/defconfig ]; then
-              cp arch/arm64/configs/defconfig .config
-              make ARCH=arm64 olddefconfig
-            else
-              echo "错误：未找到任何 defconfig 文件！"
-              ls arch/arm64/configs/
-              exit 1
-            fi
-          else
-            make ARCH=arm64 ${DEFCONFIG}_defconfig
-          fi
-
-      - name: 准备内核模块编译环境
+      - name: 内核模块编译环境
         env:
           ARCH: arm64
+          CC: clang
+          CLANG_TRIPLE: aarch64-linux-gnu-
           CROSS_COMPILE: aarch64-linux-gnu-
         run: |
-          cd ${{ github.workspace }}/kernel_src
-          make ARCH=arm64 modules_prepare
+          # 清理旧编译产物
+          rm -rf out
+          # 改用SM7325对应defconfig，自行替换成你设备的defconfig名
+          make O=out ARCH=arm64 vendor/holi_QGKI.config
+          # 开启兼容第三方模块、关闭严格vermagic
+          echo "CONFIG_MODULES=y" >> out/.config
+          echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
+          echo "CONFIG_ALLOW_UNSUPPORTED_MODULES=y" >> out/.config
+          echo "CONFIG_MODVERSIONS=n" >> out/.config
+          # 准备编译环境
+          make O=out ARCH=arm64 modules_prepare
+          # 编译当前仓库外部驱动模块
+          make O=out ARCH=arm64 M=$(pwd) modules -j$(nproc)
 
-      - name: 编译驱动模块（DKernel）
-        env:
-          ARCH: arm64
-          CROSS_COMPILE: aarch64-linux-gnu-
-          KERNEL_SRC: ${{ github.workspace }}/kernel_src
-        run: |
-          cd ${{ github.workspace }}
-          make
-
-      - name: 打包产物
+      - name: 打包 ko 产物
         run: |
           mkdir -p artifacts
-          cp *.ko artifacts/ 2>/dev/null || true
-          cp ${{ github.workspace }}/kernel_src/include/config/kernel.release artifacts/kernel_version.txt 2>/dev/null || true
-          cd artifacts
-          zip ../DKernel-$(date +%Y%m%d-%H%M%S).zip *
+          find . -maxdepth 3 -name "*.ko" -exec cp {} artifacts/ \;
+          zip -r kernel-modules-$(date +%Y%m%d%H%M%S).zip artifacts/
 
-      - name: 上传编译产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: DKernel-module
-          path: DKernel-*.zip
+          name: SM7325-KO-Modules
+          path: kernel-modules-*.zip
