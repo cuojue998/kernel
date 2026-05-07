@@ -1,14 +1,11 @@
-# 使用内核编译系统
-obj-m += DKernel.o
-
-# 当前模块源码目录
+# 内核源码目录由外部环境变量 KERNEL_SRC 指定
+KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
-# 内核源码路径（GitHub Action 中会设置为仓库根目录，这里可用相对路径）
-KERNEL_DIR ?= /lib/modules/$(shell uname -r)/build
+obj-m += DKernel.o
 
 all:
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules
 
 clean:
-	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) clean
+	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) clean
